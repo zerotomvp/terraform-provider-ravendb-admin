@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
@@ -422,6 +423,8 @@ func (c *Client) GenerateCertificate(req GenerateCertificateRequest) (*Generated
 		return nil, fmt.Errorf("failed to read ZIP: %w", err)
 	}
 
+	var crtData, keyData []byte
+
 	for _, file := range zipReader.File {
 		rc, err := file.Open()
 		if err != nil {
@@ -444,10 +447,65 @@ func (c *Client) GenerateCertificate(req GenerateCertificateRequest) (*Generated
 			}
 		} else if strings.HasSuffix(file.Name, ".pem") {
 			result.PEM = data
+		} else if strings.HasSuffix(file.Name, ".crt") {
+			crtData = data
+		} else if strings.HasSuffix(file.Name, ".key") {
+			keyData = data
 		}
 	}
 
+	// Build PEM from .crt + .key if no .pem file was in the ZIP
+	if len(result.PEM) == 0 && len(crtData) > 0 && len(keyData) > 0 {
+		// Ensure newline between cert and key
+		combined := append([]byte{}, bytes.TrimRight(crtData, "\r\n")...)
+		combined = append(combined, '\n')
+		combined = append(combined, bytes.TrimRight(keyData, "\r\n")...)
+		combined = append(combined, '\n')
+		result.PEM = combined
+	}
+
+	// Last resort: convert PFX to PEM
+	if len(result.PEM) == 0 && len(result.PFX) > 0 {
+		pemData, err := pfxToPEM(result.PFX, req.Password)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert PFX to PEM: %w", err)
+		}
+		result.PEM = pemData
+	}
+
 	return result, nil
+}
+
+// pfxToPEM converts a PFX/PKCS#12 bundle to a combined PEM (cert + key)
+func pfxToPEM(pfxData []byte, password string) ([]byte, error) {
+	privateKey, cert, err := pkcs12.Decode(pfxData, password)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode PFX: %w", err)
+	}
+
+	var buf bytes.Buffer
+
+	// Encode certificate
+	if err := pem.Encode(&buf, &pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: cert.Raw,
+	}); err != nil {
+		return nil, fmt.Errorf("failed to encode certificate PEM: %w", err)
+	}
+
+	// Encode private key
+	keyBytes, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal private key: %w", err)
+	}
+	if err := pem.Encode(&buf, &pem.Block{
+		Type:  "PRIVATE KEY",
+		Bytes: keyBytes,
+	}); err != nil {
+		return nil, fmt.Errorf("failed to encode private key PEM: %w", err)
+	}
+
+	return buf.Bytes(), nil
 }
 
 // CertificateInfo holds extracted certificate information
