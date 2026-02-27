@@ -143,8 +143,6 @@ Returns a list of all databases with their status.
 | `databases[].name` | string | Database name |
 | `databases[].disabled` | bool | Whether disabled |
 | `databases[].encrypted` | bool | Whether encrypted |
-| `databases[].documents_count` | number | Document count |
-| `databases[].indexes_count` | number | Index count |
 
 ### ravendb_certificate
 

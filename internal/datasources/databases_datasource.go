@@ -29,11 +29,9 @@ type DatabasesDataSourceModel struct {
 
 // DatabaseModel describes a database in the list.
 type DatabaseModel struct {
-	Name           types.String `tfsdk:"name"`
-	Disabled       types.Bool   `tfsdk:"disabled"`
-	Encrypted      types.Bool   `tfsdk:"encrypted"`
-	DocumentsCount types.Int64  `tfsdk:"documents_count"`
-	IndexesCount   types.Int64  `tfsdk:"indexes_count"`
+	Name      types.String `tfsdk:"name"`
+	Disabled  types.Bool   `tfsdk:"disabled"`
+	Encrypted types.Bool   `tfsdk:"encrypted"`
 }
 
 func (d *DatabasesDataSource) Metadata(ctx context.Context, req datasource.MetadataRequest, resp *datasource.MetadataResponse) {
@@ -60,14 +58,6 @@ func (d *DatabasesDataSource) Schema(ctx context.Context, req datasource.SchemaR
 						},
 						"encrypted": schema.BoolAttribute{
 							Description: "Whether the database is encrypted.",
-							Computed:    true,
-						},
-						"documents_count": schema.Int64Attribute{
-							Description: "Number of documents in the database.",
-							Computed:    true,
-						},
-						"indexes_count": schema.Int64Attribute{
-							Description: "Number of indexes in the database.",
 							Computed:    true,
 						},
 					},
@@ -114,11 +104,9 @@ func (d *DatabasesDataSource) Read(ctx context.Context, req datasource.ReadReque
 	data.Databases = make([]DatabaseModel, len(databases))
 	for i, db := range databases {
 		data.Databases[i] = DatabaseModel{
-			Name:           types.StringValue(db.Name),
-			Disabled:       types.BoolValue(db.Disabled),
-			Encrypted:      types.BoolValue(db.IsEncrypted),
-			DocumentsCount: types.Int64Value(db.DocumentsCount),
-			IndexesCount:   types.Int64Value(int64(db.IndexesCount)),
+			Name:      types.StringValue(db.Name),
+			Disabled:  types.BoolValue(db.Disabled),
+			Encrypted: types.BoolValue(db.IsEncrypted),
 		}
 	}
 
