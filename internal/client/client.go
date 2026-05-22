@@ -443,7 +443,7 @@ func (c *Client) GenerateCertificate(req GenerateCertificateRequest) (*Generated
 			certInfo, err := extractCertInfoFromPFX(data, req.Password)
 			if err == nil {
 				result.Thumbprint = certInfo.Thumbprint
-				result.NotAfter = certInfo.NotAfter.Format(time.RFC3339)
+				result.NotAfter = certInfo.NotAfter.UTC().Format(time.RFC3339)
 			}
 		} else if strings.HasSuffix(file.Name, ".pem") {
 			result.PEM = data
@@ -538,6 +538,28 @@ func calculateThumbprint(cert *x509.Certificate) string {
 	return fmt.Sprintf("%X", hash)
 }
 
+// NormalizeNotAfter parses a NotAfter timestamp in any of the formats RavenDB
+// or the provider may emit and returns it in canonical RFC3339. RavenDB serves
+// "2006-01-02T15:04:05.0000000" (no timezone, treated as UTC by the server).
+// Returns the input unchanged if it cannot be parsed.
+func NormalizeNotAfter(s string) string {
+	if s == "" {
+		return s
+	}
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02T15:04:05.999999999",
+		"2006-01-02T15:04:05",
+	}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC().Format(time.RFC3339)
+		}
+	}
+	return s
+}
+
 // UploadCertificate uploads an existing certificate
 func (c *Client) UploadCertificate(cert Certificate) error {
 	resp, err := c.doRequest("PUT", "/admin/certificates", cert)
@@ -585,7 +607,10 @@ func (c *Client) GetCertificate(thumbprint string) (*Certificate, error) {
 		return nil, nil
 	}
 
-	return &result.Results[0], nil
+	cert := result.Results[0]
+	cert.NotAfter = NormalizeNotAfter(cert.NotAfter)
+	cert.NotBefore = NormalizeNotAfter(cert.NotBefore)
+	return &cert, nil
 }
 
 // ListCertificates returns all certificates
@@ -606,6 +631,10 @@ func (c *Client) ListCertificates() ([]Certificate, error) {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
+	for i := range result.Results {
+		result.Results[i].NotAfter = NormalizeNotAfter(result.Results[i].NotAfter)
+		result.Results[i].NotBefore = NormalizeNotAfter(result.Results[i].NotBefore)
+	}
 	return result.Results, nil
 }
 
