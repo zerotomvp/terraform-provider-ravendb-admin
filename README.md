@@ -104,6 +104,28 @@ data "ravendb_certificate" "my_cert" {
 }
 ```
 
+> **Reading data sources after creating/modifying resources in the same apply**
+>
+> Terraform evaluates data sources at plan time by default. If you read
+> `ravendb_databases` (or any other data source) and also create or modify
+> resources that affect what the data source returns *in the same apply*,
+> the data source's result will reflect the pre-apply state. The drift
+> corrects itself on the next plan.
+>
+> To force the data source to be re-read after the resource changes, add
+> `depends_on`:
+>
+> ```hcl
+> resource "ravendb_database" "test" {
+>   name               = "tf-review-db"
+>   replication_factor = 1
+> }
+>
+> data "ravendb_databases" "all" {
+>   depends_on = [ravendb_database.test]
+> }
+> ```
+
 ## Resources Reference
 
 ### ravendb_database
