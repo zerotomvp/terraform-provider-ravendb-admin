@@ -73,11 +73,17 @@ func NewClient(config ClientConfig) (*Client, error) {
 	return client, nil
 }
 
-// loadPFXCertificate loads a PFX certificate (placeholder - needs proper implementation)
+// loadPFXCertificate loads a PFX/PKCS#12 bundle into a tls.Certificate.
 func loadPFXCertificate(data []byte, password string) (tls.Certificate, error) {
-	// For now, return an error - PFX loading requires additional library
-	// TODO: Implement PFX loading with golang.org/x/crypto/pkcs12
-	return tls.Certificate{}, fmt.Errorf("PFX certificate loading not yet implemented, use PEM format")
+	privateKey, cert, err := pkcs12.Decode(data, password)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("failed to decode PFX: %w", err)
+	}
+	return tls.Certificate{
+		Certificate: [][]byte{cert.Raw},
+		PrivateKey:  privateKey,
+		Leaf:        cert,
+	}, nil
 }
 
 // Database represents a RavenDB database

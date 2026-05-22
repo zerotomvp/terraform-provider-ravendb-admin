@@ -1,6 +1,16 @@
 package client
 
-import "testing"
+import (
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"math/big"
+	"testing"
+	"time"
+
+	"software.sslmate.com/src/go-pkcs12"
+)
 
 func TestNormalizeNotAfter(t *testing.T) {
 	cases := []struct {
@@ -24,5 +34,64 @@ func TestNormalizeNotAfter(t *testing.T) {
 				t.Errorf("NormalizeNotAfter(%q) = %q, want %q", c.in, got, c.want)
 			}
 		})
+	}
+}
+
+func generateTestPFX(t *testing.T, password string) []byte {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("rsa.GenerateKey: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "test"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("x509.CreateCertificate: %v", err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("x509.ParseCertificate: %v", err)
+	}
+	pfxData, err := pkcs12.Modern.Encode(key, cert, nil, password)
+	if err != nil {
+		t.Fatalf("pkcs12.Encode: %v", err)
+	}
+	return pfxData
+}
+
+func TestLoadPFXCertificate(t *testing.T) {
+	pfxData := generateTestPFX(t, "secret")
+
+	cert, err := loadPFXCertificate(pfxData, "secret")
+	if err != nil {
+		t.Fatalf("loadPFXCertificate: %v", err)
+	}
+	if len(cert.Certificate) == 0 {
+		t.Fatal("expected at least one certificate in chain")
+	}
+	if cert.PrivateKey == nil {
+		t.Fatal("expected private key to be populated")
+	}
+	if cert.Leaf == nil {
+		t.Fatal("expected leaf to be populated")
+	}
+	if cert.Leaf.Subject.CommonName != "test" {
+		t.Errorf("unexpected CN: %q", cert.Leaf.Subject.CommonName)
+	}
+}
+
+func TestLoadPFXCertificateWrongPassword(t *testing.T) {
+	pfxData := generateTestPFX(t, "right")
+
+	_, err := loadPFXCertificate(pfxData, "wrong")
+	if err == nil {
+		t.Fatal("expected error for wrong password, got nil")
 	}
 }
