@@ -446,7 +446,7 @@ func (c *Client) GenerateCertificate(req GenerateCertificateRequest) (*Generated
 		if strings.HasSuffix(file.Name, ".pfx") {
 			result.PFX = data
 			// Extract thumbprint and NotAfter from PFX
-			certInfo, err := extractCertInfoFromPFX(data, req.Password)
+			certInfo, err := ExtractCertInfoFromPFX(data, req.Password)
 			if err == nil {
 				result.Thumbprint = certInfo.Thumbprint
 				result.NotAfter = certInfo.NotAfter.UTC().Format(time.RFC3339)
@@ -472,7 +472,7 @@ func (c *Client) GenerateCertificate(req GenerateCertificateRequest) (*Generated
 
 	// Last resort: convert PFX to PEM
 	if len(result.PEM) == 0 && len(result.PFX) > 0 {
-		pemData, err := pfxToPEM(result.PFX, req.Password)
+		pemData, err := PFXToPEM(result.PFX, req.Password)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert PFX to PEM: %w", err)
 		}
@@ -482,8 +482,8 @@ func (c *Client) GenerateCertificate(req GenerateCertificateRequest) (*Generated
 	return result, nil
 }
 
-// pfxToPEM converts a PFX/PKCS#12 bundle to a combined PEM (cert + key)
-func pfxToPEM(pfxData []byte, password string) ([]byte, error) {
+// PFXToPEM converts a PFX/PKCS#12 bundle to a combined PEM (cert + key).
+func PFXToPEM(pfxData []byte, password string) ([]byte, error) {
 	privateKey, cert, err := pkcs12.Decode(pfxData, password)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode PFX: %w", err)
@@ -520,27 +520,45 @@ type CertificateInfo struct {
 	NotAfter   time.Time
 }
 
-// extractCertInfoFromPFX extracts the thumbprint and expiry from a PFX certificate
-func extractCertInfoFromPFX(data []byte, password string) (*CertificateInfo, error) {
-	// Decode the PFX
+// ExtractCertInfoFromPFX extracts the thumbprint and expiry from a PFX
+// certificate.
+func ExtractCertInfoFromPFX(data []byte, password string) (*CertificateInfo, error) {
 	_, cert, err := pkcs12.Decode(data, password)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode PFX: %w", err)
 	}
 
-	// Calculate thumbprint (SHA1 hash of the DER-encoded certificate)
-	thumbprint := calculateThumbprint(cert)
-
 	return &CertificateInfo{
-		Thumbprint: thumbprint,
+		Thumbprint: CalculateThumbprint(cert),
 		NotAfter:   cert.NotAfter,
 	}, nil
 }
 
-// calculateThumbprint calculates the SHA1 thumbprint of a certificate
-func calculateThumbprint(cert *x509.Certificate) string {
+// ParseCertFromPEM extracts the first CERTIFICATE block from a PEM bundle
+// (which may also contain a PRIVATE KEY block) and parses it as an x509
+// certificate.
+func ParseCertFromPEM(pemData []byte) (*x509.Certificate, error) {
+	rest := pemData
+	for {
+		var block *pem.Block
+		block, rest = pem.Decode(rest)
+		if block == nil {
+			return nil, fmt.Errorf("no CERTIFICATE block found in PEM data")
+		}
+		if block.Type == "CERTIFICATE" {
+			cert, err := x509.ParseCertificate(block.Bytes)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse certificate: %w", err)
+			}
+			return cert, nil
+		}
+	}
+}
+
+// CalculateThumbprint calculates the SHA1 thumbprint of a certificate,
+// formatted as an uppercase hex string (matching the RavenDB convention).
+func CalculateThumbprint(cert *x509.Certificate) string {
 	hash := sha1.Sum(cert.Raw)
-	// Format as uppercase hex string
 	return fmt.Sprintf("%X", hash)
 }
 

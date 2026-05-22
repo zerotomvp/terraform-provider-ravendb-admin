@@ -153,6 +153,42 @@ data "ravendb_certificate" "my_cert" {
 | `pem_base64` | string | Computed | Generated PEM (sensitive) |
 | `not_after` | string | Computed | Expiration date |
 
+#### Importing certificates
+
+The minimum import ID is the certificate thumbprint:
+
+```bash
+terraform import ravendb_certificate.app_client <THUMBPRINT>
+```
+
+A bare import only recovers metadata the server can return (name, security
+clearance, permissions, `not_after`). The `password`, `expire_after_days`,
+`pfx_base64`, and `pem_base64` attributes will be null in state because the
+server never re-emits private keys or write-time inputs.
+
+If you still have the original cert file locally, supply it during import to
+populate the rest of state:
+
+```bash
+# Import with the original PFX so pfx_base64 / pem_base64 / not_after land in state
+terraform import 'ravendb_certificate.app_client' \
+  '<THUMBPRINT>:pfx=/path/to/cert.pfx:password=<password>:expire_after_days=365'
+
+# Or import with a PEM
+terraform import 'ravendb_certificate.app_client' \
+  '<THUMBPRINT>:pem=/path/to/cert.pem'
+```
+
+Supported keys: `password`, `expire_after_days`, `pfx`, `pem`. Values containing
+`:` or `=` must be URL-encoded (e.g. `password=p%40ss%3Aword` for `p@ss:word`).
+The provider reads the file, verifies the thumbprint embedded in it matches
+the one you supplied, and refuses the import on mismatch.
+
+If you no longer have the cert file, you cannot recover `pfx_base64` /
+`pem_base64`. The only way to obtain fresh material is to rotate (replace)
+the resource — the RavenDB server only emits the private key once, at
+generation time.
+
 ## Data Sources Reference
 
 ### ravendb_databases

@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"net/url"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -72,9 +75,9 @@ func (r *CertificateResource) Schema(ctx context.Context, req resource.SchemaReq
 				},
 			},
 			"password": schema.StringAttribute{
-				Description: "Password for the certificate. For generated certificates, this is the passphrase for the PFX. For uploaded certificates, this is the password to decrypt the PFX.",
+				Description: "Password for the certificate. For generated certificates, this is the passphrase for the PFX. For uploaded certificates, this is the password to decrypt the PFX. Stored in state (sensitive) so downstream resources can reference it; the server does not return the password, so it is preserved from state across reads.",
 				Optional:    true,
-				Computed:    true, // Not returned by API, preserve from state
+				Computed:    true,
 				Sensitive:   true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
@@ -92,9 +95,9 @@ func (r *CertificateResource) Schema(ctx context.Context, req resource.SchemaReq
 				ElementType: types.StringType,
 			},
 			"expire_after_days": schema.Int64Attribute{
-				Description: "Number of days until the generated certificate expires. Default is 1825 (5 years). Only used when generating certificates.",
+				Description: "Number of days until the generated certificate expires. Only used when generating certificates; the server does not return this value, so it is preserved from state.",
 				Optional:    true,
-				Computed:    true, // Not returned by API, preserve from state
+				Computed:    true,
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.UseStateForUnknown(),
 				},
@@ -217,11 +220,9 @@ func (r *CertificateResource) createGenerated(ctx context.Context, data *Certifi
 	data.Thumbprint = types.StringValue(result.Thumbprint)
 	data.NotAfter = types.StringValue(result.NotAfter)
 
-	// Ensure computed fields are set to known values
-	// This is required because these fields are marked as Computed and Terraform
-	// requires all computed values to be known after apply.
+	// Ensure Optional+Computed fields are known. Password defaults to empty
+	// string (no password); ExpireAfterDays stays null if unspecified.
 	if data.Password.IsUnknown() || data.Password.IsNull() {
-		// If no password was provided, set it to empty string (no password)
 		data.Password = types.StringValue("")
 	}
 	if data.ExpireAfterDays.IsUnknown() {
@@ -282,13 +283,8 @@ func (r *CertificateResource) createUploaded(ctx context.Context, data *Certific
 	data.PFXBase64 = types.StringNull()
 	data.PEMBase64 = types.StringNull()
 
-	// Ensure computed fields are set to known values
-	// This is required because these fields are marked as Computed and Terraform
-	// requires all computed values to be known after apply.
-	// We must explicitly set these even if the user provided a value, to ensure
-	// the state contains a known value (not unknown).
+	// Ensure Optional+Computed fields are known.
 	if data.Password.IsUnknown() || data.Password.IsNull() {
-		// If no password was provided, set it to empty string (no password)
 		data.Password = types.StringValue("")
 	}
 	if data.ExpireAfterDays.IsUnknown() {
@@ -382,8 +378,8 @@ func (r *CertificateResource) Update(ctx context.Context, req resource.UpdateReq
 	data.PEMBase64 = state.PEMBase64
 	data.NotAfter = state.NotAfter
 
-	// Preserve write-only fields from plan (they're already in 'data' from req.Plan.Get)
-	// But if they're null in plan, preserve from state
+	// password and expire_after_days are Optional+Computed: if the plan does
+	// not specify a value, preserve whatever state already had.
 	if data.Password.IsNull() && !state.Password.IsNull() {
 		data.Password = state.Password
 	}
@@ -412,26 +408,186 @@ func (r *CertificateResource) Delete(ctx context.Context, req resource.DeleteReq
 	}
 }
 
-func (r *CertificateResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	// Import format: "thumbprint" or "thumbprint:password"
-	// This allows importing certificates with or without password
-	parts := strings.Split(req.ID, ":")
+// importParams holds the parsed values from a certificate import ID.
+type importParams struct {
+	Thumbprint      string
+	Password        string
+	HasPassword     bool
+	ExpireAfterDays int64
+	HasExpire       bool
+	PFXPath         string
+	PEMPath         string
+}
 
-	// Set thumbprint (always required)
+// parseImportID parses a certificate import ID of the form:
+//
+//	<thumbprint>[:key=value]*
+//
+// where supported keys are: password, expire_after_days, pfx, pem.
+// Values may be URL-encoded (e.g. "p%40ss" for "p@ss") to embed ':' or '='.
+func parseImportID(id string) (*importParams, error) {
+	if id == "" {
+		return nil, fmt.Errorf("import ID is empty")
+	}
+	parts := strings.Split(id, ":")
 	thumbprint := parts[0]
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("thumbprint"), thumbprint)...)
-
-	// Set password if provided (optional)
-	if len(parts) == 2 && parts[1] != "" {
-		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("password"), parts[1])...)
+	if thumbprint == "" {
+		return nil, fmt.Errorf("thumbprint is required")
 	}
-	// If len(parts) == 1, no password provided - leave it unset in state
-
-	// Validate format
-	if len(parts) > 2 {
-		resp.Diagnostics.AddError(
-			"Invalid Import ID",
-			fmt.Sprintf("Expected format 'thumbprint' or 'thumbprint:password', got: %s", req.ID),
-		)
+	p := &importParams{Thumbprint: thumbprint}
+	for _, kv := range parts[1:] {
+		eq := strings.IndexByte(kv, '=')
+		if eq <= 0 {
+			return nil, fmt.Errorf("expected key=value in segment %q", kv)
+		}
+		key := kv[:eq]
+		raw := kv[eq+1:]
+		val, err := url.QueryUnescape(raw)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode value for key %q: %w", key, err)
+		}
+		switch key {
+		case "password":
+			p.Password = val
+			p.HasPassword = true
+		case "expire_after_days":
+			n, err := strconv.ParseInt(val, 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("expire_after_days must be an integer, got %q", val)
+			}
+			p.ExpireAfterDays = n
+			p.HasExpire = true
+		case "pfx":
+			p.PFXPath = val
+		case "pem":
+			p.PEMPath = val
+		default:
+			return nil, fmt.Errorf("unknown import key %q (expected: password, expire_after_days, pfx, pem)", key)
+		}
 	}
+	return p, nil
+}
+
+func (r *CertificateResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	// Import ID formats:
+	//   <thumbprint>
+	//   <thumbprint>:password=<val>
+	//   <thumbprint>:pfx=<path>:password=<val>
+	//   <thumbprint>:pem=<path>
+	//   <thumbprint>:expire_after_days=<n>:...
+	//
+	// Values may be URL-encoded if they contain ':' or '='.
+	//
+	// If a pfx or pem file path is supplied, the provider reads the file,
+	// verifies its thumbprint matches the import ID, and populates
+	// pfx_base64 / pem_base64 / not_after in state. Without a file path,
+	// those fields stay null (the server does not re-emit the private key).
+	params, err := parseImportID(req.ID)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid Import ID", err.Error())
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("thumbprint"), params.Thumbprint)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if params.HasPassword {
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("password"), params.Password)...)
+	}
+	if params.HasExpire {
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("expire_after_days"), params.ExpireAfterDays)...)
+	}
+
+	if params.PFXPath != "" {
+		if err := r.importFromPFX(ctx, params, resp); err != nil {
+			resp.Diagnostics.AddError("Failed to import from PFX", err.Error())
+			return
+		}
+	}
+	if params.PEMPath != "" {
+		if err := r.importFromPEM(ctx, params, resp); err != nil {
+			resp.Diagnostics.AddError("Failed to import from PEM", err.Error())
+			return
+		}
+	}
+}
+
+// certImportMaterial is the verified cert payload that an import file
+// contributes to state.
+type certImportMaterial struct {
+	PFXBase64 string
+	PEMBase64 string
+	NotAfter  string
+}
+
+// extractFromPFX parses a PFX blob, verifies its thumbprint matches the
+// expected value, and returns the base64-encoded PFX + a synthesized PEM
+// + NotAfter in RFC3339.
+func extractFromPFX(pfxData []byte, password, expectedThumbprint string) (*certImportMaterial, error) {
+	info, err := client.ExtractCertInfoFromPFX(pfxData, password)
+	if err != nil {
+		return nil, fmt.Errorf("parse PFX: %w", err)
+	}
+	if !strings.EqualFold(info.Thumbprint, expectedThumbprint) {
+		return nil, fmt.Errorf("thumbprint mismatch: PFX file contains %s, import ID has %s", info.Thumbprint, expectedThumbprint)
+	}
+	m := &certImportMaterial{
+		PFXBase64: base64.StdEncoding.EncodeToString(pfxData),
+		NotAfter:  info.NotAfter.UTC().Format(time.RFC3339),
+	}
+	if pemData, err := client.PFXToPEM(pfxData, password); err == nil {
+		m.PEMBase64 = base64.StdEncoding.EncodeToString(pemData)
+	}
+	return m, nil
+}
+
+// extractFromPEM parses a PEM blob, verifies its thumbprint matches the
+// expected value, and returns the base64-encoded PEM + NotAfter in RFC3339.
+func extractFromPEM(pemData []byte, expectedThumbprint string) (*certImportMaterial, error) {
+	cert, err := client.ParseCertFromPEM(pemData)
+	if err != nil {
+		return nil, fmt.Errorf("parse PEM: %w", err)
+	}
+	got := client.CalculateThumbprint(cert)
+	if !strings.EqualFold(got, expectedThumbprint) {
+		return nil, fmt.Errorf("thumbprint mismatch: PEM file contains %s, import ID has %s", got, expectedThumbprint)
+	}
+	return &certImportMaterial{
+		PEMBase64: base64.StdEncoding.EncodeToString(pemData),
+		NotAfter:  cert.NotAfter.UTC().Format(time.RFC3339),
+	}, nil
+}
+
+func (r *CertificateResource) importFromPFX(ctx context.Context, p *importParams, resp *resource.ImportStateResponse) error {
+	pfxData, err := os.ReadFile(p.PFXPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", p.PFXPath, err)
+	}
+	m, err := extractFromPFX(pfxData, p.Password, p.Thumbprint)
+	if err != nil {
+		return err
+	}
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("pfx_base64"), m.PFXBase64)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("not_after"), m.NotAfter)...)
+	// Only fill pem_base64 if the caller didn't also supply a PEM file
+	// (which will be processed afterwards and is authoritative).
+	if p.PEMPath == "" && m.PEMBase64 != "" {
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("pem_base64"), m.PEMBase64)...)
+	}
+	return nil
+}
+
+func (r *CertificateResource) importFromPEM(ctx context.Context, p *importParams, resp *resource.ImportStateResponse) error {
+	pemData, err := os.ReadFile(p.PEMPath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", p.PEMPath, err)
+	}
+	m, err := extractFromPEM(pemData, p.Thumbprint)
+	if err != nil {
+		return err
+	}
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("pem_base64"), m.PEMBase64)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("not_after"), m.NotAfter)...)
+	return nil
 }

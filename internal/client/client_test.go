@@ -95,3 +95,52 @@ func TestLoadPFXCertificateWrongPassword(t *testing.T) {
 		t.Fatal("expected error for wrong password, got nil")
 	}
 }
+
+func TestExtractCertInfoFromPFX(t *testing.T) {
+	pfxData := generateTestPFX(t, "secret")
+
+	info, err := ExtractCertInfoFromPFX(pfxData, "secret")
+	if err != nil {
+		t.Fatalf("ExtractCertInfoFromPFX: %v", err)
+	}
+	if len(info.Thumbprint) != 40 {
+		t.Errorf("expected 40-char SHA1 thumbprint, got %q", info.Thumbprint)
+	}
+	if info.NotAfter.IsZero() {
+		t.Error("NotAfter should be populated")
+	}
+}
+
+func TestPFXToPEM_RoundTrip(t *testing.T) {
+	pfxData := generateTestPFX(t, "secret")
+
+	pemData, err := PFXToPEM(pfxData, "secret")
+	if err != nil {
+		t.Fatalf("PFXToPEM: %v", err)
+	}
+
+	cert, err := ParseCertFromPEM(pemData)
+	if err != nil {
+		t.Fatalf("ParseCertFromPEM: %v", err)
+	}
+	if cert.Subject.CommonName != "test" {
+		t.Errorf("unexpected CN: %q", cert.Subject.CommonName)
+	}
+
+	// Thumbprint from PEM must match thumbprint from PFX.
+	info, err := ExtractCertInfoFromPFX(pfxData, "secret")
+	if err != nil {
+		t.Fatalf("ExtractCertInfoFromPFX: %v", err)
+	}
+	if got := CalculateThumbprint(cert); got != info.Thumbprint {
+		t.Errorf("thumbprint mismatch: PEM=%s PFX=%s", got, info.Thumbprint)
+	}
+}
+
+func TestParseCertFromPEM_NoCertificateBlock(t *testing.T) {
+	pemData := []byte("-----BEGIN PRIVATE KEY-----\nMIIBVgIBADANBgkqhkiG9w0BAQEFAASCAUAwggE8\n-----END PRIVATE KEY-----\n")
+	_, err := ParseCertFromPEM(pemData)
+	if err == nil {
+		t.Fatal("expected error when no CERTIFICATE block present")
+	}
+}
