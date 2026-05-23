@@ -224,7 +224,44 @@ edit a past release's notes, update its GitHub release body and re-run the
 `Sync README changelog` workflow.
 
 <!-- changelog:start -->
-_Not yet generated. Will populate on the next release publish._
+### v0.2.0
+
+## Changelog
+### Features
+* c381c7a56a1d7b9259d58cd85fcd32a044067cf7: feat: implement PFX provider auth via pkcs12 (@georgiosd)
+* 0b89d2f8aba52075d614a63e72bcfd6aeabfff75: feat: rich certificate import with optional file backing (@georgiosd)
+### Bug fixes
+* dedf57c9b4be0afd9d386ac9c8dc357027b33e78: fix: add manifest.json to goreleaser release assets (@georgiosd)
+* 79f7bce3330c03cdb74ac75a6a8af8b6f6c8969f: fix: normalize not_after timestamp to RFC3339 in client (@georgiosd)
+### Documentation
+* 67d7aab59aba78a48ce76e11d3b0f44cc326e23e: docs: explain data source eval order vs same-apply resource changes (@georgiosd)
+
+### v0.1.2
+
+## Bug fixes
+
+- `pem_base64` is now populated when the RavenDB ZIP response contains
+  separate `.crt` and `.key` files instead of an embedded `.pem`.
+- `terraform-registry-manifest.json` is included in release assets.
+
+### v0.1.1
+
+## Bug fixes
+
+- Removed volatile `documents_count` and `indexes_count` fields from the
+  `ravendb_databases` data source. These fluctuate on every read and were
+  causing spurious drift on every plan.
+
+### v0.1.0
+
+## Initial release
+
+- `ravendb_database` resource (create / update / destroy / import)
+- `ravendb_certificate` resource (generate or upload, with permissions)
+- `ravendb_databases` data source
+- `ravendb_certificate` data source (look up by thumbprint)
+- Provider supports HTTP and HTTPS, with PEM client certificates
+
 <!-- changelog:end -->
 
 ## Development
