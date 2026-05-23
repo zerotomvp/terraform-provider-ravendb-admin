@@ -1,0 +1,67 @@
+name: Sync README changelog
+
+on:
+  release:
+    types: [published, edited]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Rebuild changelog section
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tags=$(gh release list --limit 100 --json tagName --jq '.[].tagName')
+          {
+            for tag in $tags; do
+              body=$(gh release view "$tag" --json body --jq .body)
+              echo "### ${tag}"
+              echo
+              if [ -z "$body" ]; then
+                echo "_(no release notes)_"
+              else
+                printf '%s\n' "$body"
+              fi
+              echo
+            done
+          } > /tmp/changelog-block.md
+
+          python3 - <<'PY'
+          import pathlib, re
+          readme = pathlib.Path("README.md")
+          content = readme.read_text()
+          block = pathlib.Path("/tmp/changelog-block.md").read_text().rstrip() + "\n"
+          new, n = re.subn(
+              r"(<!-- changelog:start -->\n).*?(\n<!-- changelog:end -->)",
+              lambda m: m.group(1) + block + m.group(2),
+              content,
+              count=1,
+              flags=re.DOTALL,
+          )
+          if n == 0:
+              raise SystemExit("changelog markers not found in README.md")
+          readme.write_text(new)
+          PY
+
+      - name: Commit if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet README.md; then
+            echo "README already up to date"
+            exit 0
+          fi
+          git add README.md
+          git commit -m "docs: sync README changelog from GitHub releases"
+          git push
