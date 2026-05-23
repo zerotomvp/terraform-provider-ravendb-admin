@@ -4,6 +4,7 @@ on:
   release:
     types: [published, edited]
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: write
@@ -21,27 +22,33 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          set -euo pipefail
-          tags=$(gh release list --limit 100 --json tagName --jq '.[].tagName')
-          {
-            for tag in $tags; do
-              body=$(gh release view "$tag" --json body --jq .body)
-              echo "### ${tag}"
-              echo
-              if [ -z "$body" ]; then
-                echo "_(no release notes)_"
-              else
-                printf '%s\n' "$body"
-              fi
-              echo
-            done
-          } > /tmp/changelog-block.md
-
           python3 - <<'PY'
-          import pathlib, re
+          import json, pathlib, re, subprocess
+
+          def gh(*args):
+              return subprocess.run(["gh", *args], capture_output=True, text=True, check=True).stdout
+
+          def normalize_body(body: str) -> str:
+              # Strip the leading "## Changelog" header that goreleaser wraps
+              # each release body with.
+              body = re.sub(r"^\s*##\s+Changelog\s*\n", "", body, count=1)
+              # Demote any remaining headings by one level so they nest under
+              # the per-release "### vX.Y.Z" heading we emit below.
+              body = re.sub(r"^(#+)(?= )", r"#\1", body, flags=re.MULTILINE)
+              return body.rstrip()
+
+          tags = gh("release", "list", "--limit", "100", "--json", "tagName", "--jq", ".[].tagName").split()
+          parts = []
+          for tag in tags:
+              body = gh("release", "view", tag, "--json", "body", "--jq", ".body")
+              if body.strip():
+                  parts.append(f"### {tag}\n\n{normalize_body(body)}\n")
+              else:
+                  parts.append(f"### {tag}\n\n_(no release notes)_\n")
+          block = "\n".join(parts).rstrip() + "\n"
+
           readme = pathlib.Path("README.md")
           content = readme.read_text()
-          block = pathlib.Path("/tmp/changelog-block.md").read_text().rstrip() + "\n"
           new, n = re.subn(
               r"(<!-- changelog:start -->\n).*?(\n<!-- changelog:end -->)",
               lambda m: m.group(1) + block + m.group(2),
