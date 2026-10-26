@@ -39,6 +39,12 @@ provider "ravendb" {
 }
 ```
 
+The provider honours `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY`. Through a
+proxy, the proxy resolves the server's name, so the provider also works inside
+a sandbox whose only way out is a proxy (Claude Code's, for one). The client
+certificate still reaches the server: an HTTPS request goes through a `CONNECT`
+tunnel, end to end.
+
 ### Databases
 
 ```hcl

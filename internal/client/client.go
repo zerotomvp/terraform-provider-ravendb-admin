@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/net/http/httpproxy"
 	"software.sslmate.com/src/go-pkcs12"
 )
 
@@ -58,8 +59,16 @@ func NewClient(config ClientConfig) (*Client, error) {
 		tlsConfig.Certificates = []tls.Certificate{cert}
 	}
 
-	transport := &http.Transport{
-		TLSClientConfig: tlsConfig,
+	// Start from the default transport for its dial and idle timeouts, and keep
+	// its use of HTTP_PROXY / HTTPS_PROXY / NO_PROXY. A sandbox without its own
+	// network (Claude Code's) lets the provider out only through that proxy.
+	// The proxy settings are read here rather than through
+	// http.ProxyFromEnvironment, which caches them for the whole process.
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = tlsConfig
+	proxyFunc := httpproxy.FromEnvironment().ProxyFunc()
+	transport.Proxy = func(req *http.Request) (*url.URL, error) {
+		return proxyFunc(req.URL)
 	}
 
 	client := &Client{
