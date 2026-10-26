@@ -230,6 +230,14 @@ edit a past release's notes, update its GitHub release body and re-run the
 `Sync README changelog` workflow.
 
 <!-- changelog:start -->
+### v0.2.1
+
+#### Bug fixes
+* 2d3e6e7fae189480cc4ebd28953f1c5ec91efd22: fix: honour HTTPS_PROXY, HTTP_PROXY and NO_PROXY (@georgiosd)
+#### Documentation
+* 90d102a008f7f0e704668ba978f4734a0c4b6682: docs: sync README changelog from GitHub releases (@github-actions[bot])
+* 425d9e39059163ff5c715516d21d5dff469edea3: docs: sync README changelog from GitHub releases (@github-actions[bot])
+
 ### v0.2.0
 
 #### Features
